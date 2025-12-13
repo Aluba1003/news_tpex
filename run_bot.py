@@ -21,12 +21,9 @@ def fetch_announcements():
     today = datetime.date.today()
     yesterday = today - datetime.timedelta(days=1)
 
-    # 民國日期
-    roc_today = today.year - 1911
-    roc_yesterday = yesterday.year - 1911
-
-    start_date = f"{roc_yesterday}/{yesterday.month:02d}/{yesterday.day:02d}"
-    end_date = f"{roc_today}/{today.month:02d}/{today.day:02d}"
+    # 查詢用西元日期
+    start_date = f"{yesterday.year}/{yesterday.month:02d}/{yesterday.day:02d}"
+    end_date   = f"{today.year}/{today.month:02d}/{today.day:02d}"
 
     url = f"https://www.tpex.org.tw/www/zh-tw/margin/announce?startDate={start_date}&endDate={end_date}&id=&response=json"
     resp = requests.get(url)
@@ -36,15 +33,9 @@ def fetch_announcements():
     tables = data.get("tables", [])
     for table in tables:
         for row in table.get("data", []):
-            roc_date = row[0]
+            roc_date = row[0]   # 保留民國日期
             text = row[1]
-
-            # 民國轉西元
-            parts = roc_date.split("/")
-            year = int(parts[0]) + 1911
-            full_date = f"{year}-{parts[1]}-{parts[2]}"
-
-            messages.append(f"{full_date}\n{text}")
+            messages.append(f"{roc_date}\n{text}")
 
     return messages
 
@@ -62,7 +53,7 @@ def fetch_market_balance(date=None):
     data = resp.json()
 
     if data.get("stat") != "OK":
-        return f"{date} 沒有資料，可能是假日或尚未公布"
+        return None  # 沒有資料就回傳 None
 
     for table in data.get("tables", []):
         if "信用交易統計" in table.get("title", ""):
@@ -78,20 +69,27 @@ def fetch_market_balance(date=None):
                 )
             return "\n".join(msg_lines)
 
-    return f"{date} 找不到信用交易統計表格"
+    return None  # 找不到表格也回傳 None
 
 # =========================
 # 主程式
 # =========================
 if __name__ == "__main__":
-    # 1. 推播櫃買中心公告
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    print("========== 櫃買中心公告 ==========")
     announcements = fetch_announcements()
-    if announcements:
+    if announcements:   # 有公告才推播
         for msg in announcements:
             send_to_telegram(msg)
+            print(f"[{now}] 已推播公告：\n{msg}\n")
     else:
-        send_to_telegram("信用交易公告沒有新的公告。")
+        print(f"[{now}] ⚠️ 今日沒有新的信用交易公告。")
 
-    # 2. 推播全市場融資融券餘額
+    print("========== 信用交易統計 ==========")
     balance_msg = fetch_market_balance()
-    send_to_telegram(balance_msg)
+    if balance_msg:     # 有資料才推播
+        send_to_telegram(balance_msg)
+        print(f"[{now}] 已推播信用交易統計：\n{balance_msg}\n")
+    else:
+        print(f"[{now}] ⚠️ 今日沒有信用交易統計資料，可能是假日或尚未公布。")
