@@ -1,122 +1,54 @@
-import os
-import time
 import requests
-import feedparser
-import yaml
-import json
+import datetime
+import os
 from dotenv import load_dotenv
-from collections import OrderedDict
 
+# 載入 .env
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-PUSHED_FILE = "pushed.json"
-MAX_RECORDS = 1000  # 限制最多保留 1000 筆紀錄
-
-def load_pushed_records():
-    if os.path.exists(PUSHED_FILE):
-        try:
-            with open(PUSHED_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return OrderedDict(data)
-        except Exception as e:
-            print(f"❌ 無法讀取 {PUSHED_FILE}: {e}")
-    return OrderedDict()
-
-def save_pushed_records(records):
-    while len(records) > MAX_RECORDS:
-        records.popitem(last=False)  # 刪掉最舊的
-    try:
-        with open(PUSHED_FILE, "w", encoding="utf-8") as f:
-            json.dump(records, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"❌ 無法寫入 {PUSHED_FILE}: {e}")
-
-pushed_records = load_pushed_records()
-
-def send_telegram(text: str, delay: int):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("❌ 缺少 TELEGRAM_TOKEN 或 CHAT_ID")
-        return
+def send_to_telegram(message: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    resp = requests.post(url, json={
-        "chat_id": CHAT_ID,
-        "text": text,
-        "disable_web_page_preview": True
-    })
-    if resp.status_code != 200:
-        data = resp.json()
-        print("❌ 推播失敗:", data)
-        if data.get("error_code") == 429:
-            retry_after = data["parameters"]["retry_after"]
-            print(f"⏸ 等待 {retry_after} 秒後重試...")
-            time.sleep(retry_after)
-            return send_telegram(text, delay)
-    else:
-        print("✅ 推播成功")
-    time.sleep(delay)
+    payload = {"chat_id": CHAT_ID, "text": message}
+    requests.post(url, data=payload)
 
-def fetch_rss(source_name, url, keywords, match_mode="any"):
-    results = []
-    try:
-        feed = feedparser.parse(url)
-        for entry in feed.entries:
-            title, link = entry.title, entry.link
-            summary = getattr(entry, "summary", getattr(entry, "description", ""))
-            text_to_check = f"{title} {summary}"
+def fetch_announcements():
+    today = datetime.date.today()
+    yesterday = today - datetime.timedelta(days=1)
 
-            # ✅ 不排除任何標題，全部抓取
-            if keywords:
-                if match_mode == "any" and any(kw in text_to_check for kw in keywords):
-                    results.append((source_name, title, link))
-                elif match_mode == "all" and all(kw in text_to_check for kw in keywords):
-                    results.append((source_name, title, link))
-            else:
-                results.append((source_name, title, link))
-    except Exception as e:
-        results.append((source_name, f"【抓取失敗: {e}】", ""))
-    return results
+    # 民國日期
+    roc_today = today.year - 1911
+    roc_yesterday = yesterday.year - 1911
 
-def load_config():
-    config = {}
-    if os.path.exists("sources.yml"):
-        with open("sources.yml", "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-    return config
+    start_date = f"{roc_yesterday}/{yesterday.month:02d}/{yesterday.day:02d}"
+    end_date = f"{roc_today}/{today.month:02d}/{today.day:02d}"
 
-def main():
-    config = load_config()
-    if not config:
-        raise ValueError("❌ 沒有找到任何設定 sources.yml")
+    url = f"https://www.tpex.org.tw/www/zh-tw/margin/announce?startDate={start_date}&endDate={end_date}&id=&response=json"
+    resp = requests.get(url)
+    data = resp.json()
 
-    keywords = config.get("keywords", [])
-    match_mode = config.get("match_mode", "any")
-    delay = config.get("delay", 1)
+    messages = []
+    tables = data.get("tables", [])
+    for table in tables:
+        for row in table.get("data", []):
+            roc_date = row[0]
+            text = row[1]
 
-    for source in config.get("sources", []):
-        if not source.get("enabled", True):
-            print(f"⏸ 跳過來源: {source['name']}")
-            continue
-        name = source["name"]
-        url = source["url"]
-        results = fetch_rss(name, url, keywords, match_mode)
+            # 民國轉西元
+            parts = roc_date.split("/")
+            year = int(parts[0]) + 1911
+            full_date = f"{year}-{parts[1]}-{parts[2]}"
 
-        for src, title, link in results:
-            prev_title = pushed_records.get(link)
-            if prev_title is None:
-                pushed_records[link] = title
-                message = f"{src}\n{title}\n{link}"
-                send_telegram(message, delay)
-                save_pushed_records(pushed_records)
-            elif prev_title != title:
-                pushed_records[link] = title
-                message = f"{src}\n{title}\n{link}"
-                send_telegram(message, delay)
-                save_pushed_records(pushed_records)
-            else:
-                print(f"⏸ 跳過重複: {title} ({link})")
+            messages.append(f"{full_date}\n{text}")
+
+    return messages
 
 if __name__ == "__main__":
-    main()
+    announcements = fetch_announcements()
+    if announcements:
+        for msg in announcements:   # 每則公告獨立推播
+            send_to_telegram(msg)
+    else:
+        send_to_telegram("信用交易公告沒有新的公告。")
