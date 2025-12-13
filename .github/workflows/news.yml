@@ -3,7 +3,7 @@ name: Run TPEX Announce Bot
 on:
   schedule:
     - cron: "30 0 * * *"    # 台灣時間早上08:30 (UTC+8 → UTC 00:30)
-    - cron: "30 12 * * *"   # 台灣時間晚上20:30 (UTC+8 → UTC 13:45)
+    - cron: "30 12 * * *"   # 台灣時間晚上20:30 (UTC+8 → UTC 12:30)
   workflow_dispatch:        # 允許手動觸發
 
 jobs:
