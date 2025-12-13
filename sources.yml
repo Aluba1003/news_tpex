@@ -1,0 +1,6 @@
+sources:
+  - name: "Yahoo奇摩股市-融資"
+    url: "https://tw.stock.yahoo.com/rss?q=%E8%9E%8D%E8%B3%87"
+    enabled: true
+
+delay: 1   # 每則推播間隔秒數
