@@ -1,7 +1,9 @@
 import requests
 import datetime
 import os
+import json
 from dotenv import load_dotenv
+from collections import OrderedDict
 
 # 載入 .env
 load_dotenv()
@@ -9,10 +11,50 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
+PUSHED_FILE = "pushed.json"
+MAX_RECORDS = 1000  # 最多保留 1000 筆紀錄
+
+# =========================
+# 紀錄檔處理
+# =========================
+def load_pushed_records():
+    if os.path.exists(PUSHED_FILE):
+        try:
+            with open(PUSHED_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return OrderedDict(data)
+        except Exception as e:
+            print(f"❌ 無法讀取 {PUSHED_FILE}: {e}")
+    return OrderedDict()
+
+def save_pushed_records(records):
+    while len(records) > MAX_RECORDS:
+        records.popitem(last=False)  # 刪掉最舊的
+    try:
+        with open(PUSHED_FILE, "w", encoding="utf-8") as f:
+            json.dump(records, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"❌ 無法寫入 {PUSHED_FILE}: {e}")
+
+pushed_records = load_pushed_records()
+
+# =========================
+# Telegram 推播
+# =========================
 def send_to_telegram(message: str):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("❌ 缺少 TELEGRAM_TOKEN 或 CHAT_ID")
+        return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message}
-    requests.post(url, data=payload)
+    payload = {"chat_id": CHAT_ID, "text": message, "disable_web_page_preview": True}
+    try:
+        resp = requests.post(url, json=payload, timeout=10)
+        if resp.status_code == 200:
+            print("✅ 推播成功")
+        else:
+            print("❌ 推播失敗:", resp.text)
+    except requests.RequestException as e:
+        print(f"❌ 推播失敗: {e}")
 
 # =========================
 # 抓櫃買中心公告
@@ -21,7 +63,6 @@ def fetch_announcements():
     today = datetime.date.today()
     yesterday = today - datetime.timedelta(days=1)
 
-    # 查詢用西元日期
     start_date = f"{yesterday.year}/{yesterday.month:02d}/{yesterday.day:02d}"
     end_date   = f"{today.year}/{today.month:02d}/{today.day:02d}"
 
@@ -33,10 +74,9 @@ def fetch_announcements():
     tables = data.get("tables", [])
     for table in tables:
         for row in table.get("data", []):
-            roc_date = row[0]   # 保留民國日期
+            roc_date = row[0]   # 民國日期
             text = row[1]
             messages.append(f"{roc_date}\n{text}")
-
     return messages
 
 # =========================
@@ -44,7 +84,6 @@ def fetch_announcements():
 # =========================
 def fetch_market_balance(date=None):
     if date is None:
-        # 改成抓今天
         today = datetime.date.today()
         date = today.strftime("%Y%m%d")
 
@@ -53,7 +92,7 @@ def fetch_market_balance(date=None):
     data = resp.json()
 
     if data.get("stat") != "OK":
-        return None  # 沒有資料就回傳 None
+        return None
 
     for table in data.get("tables", []):
         if "信用交易統計" in table.get("title", ""):
@@ -68,8 +107,7 @@ def fetch_market_balance(date=None):
                     f"{item}\n  前日餘額：{prev:,}\n  今日餘額：{today_val:,}\n  增減數：{diff:+,}\n  增減百分比：{pct:+.2f}%\n"
                 )
             return "\n".join(msg_lines)
-
-    return None  # 找不到表格也回傳 None
+    return None
 
 # =========================
 # 主程式
@@ -79,17 +117,27 @@ if __name__ == "__main__":
 
     print("========== 櫃買中心公告 ==========")
     announcements = fetch_announcements()
-    if announcements:   # 有公告才推播
+    if announcements:
         for msg in announcements:
-            send_to_telegram(msg)
-            print(f"[{now}] 已推播公告：\n{msg}\n")
+            if pushed_records.get(msg) is None:  # 沒推播過才推
+                pushed_records[msg] = now
+                send_to_telegram(msg)
+                save_pushed_records(pushed_records)
+                print(f"[{now}] 已推播公告：\n{msg}\n")
+            else:
+                print(f"[{now}] ⏸ 跳過重複公告：\n{msg}\n")
     else:
         print(f"[{now}] ⚠️ 今日沒有新的信用交易公告。")
 
     print("========== 信用交易統計 ==========")
     balance_msg = fetch_market_balance()
-    if balance_msg:     # 有資料才推播
-        send_to_telegram(balance_msg)
-        print(f"[{now}] 已推播信用交易統計：\n{balance_msg}\n")
+    if balance_msg:
+        if pushed_records.get(balance_msg) is None:  # 沒推播過才推
+            pushed_records[balance_msg] = now
+            send_to_telegram(balance_msg)
+            save_pushed_records(pushed_records)
+            print(f"[{now}] 已推播信用交易統計：\n{balance_msg}\n")
+        else:
+            print(f"[{now}] ⏸ 跳過重複統計：\n{balance_msg}\n")
     else:
         print(f"[{now}] ⚠️ 今日沒有信用交易統計資料，可能是假日或尚未公布。")
