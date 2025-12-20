@@ -15,6 +15,13 @@ PUSHED_FILE = "pushed.json"
 MAX_RECORDS = 1000  # 最多保留 1000 筆紀錄
 
 # =========================
+# 確保 pushed.json 存在
+# =========================
+if not os.path.exists(PUSHED_FILE):
+    with open(PUSHED_FILE, "w", encoding="utf-8") as f:
+        json.dump({}, f)
+
+# =========================
 # 紀錄檔處理
 # =========================
 def load_pushed_records():
@@ -67,8 +74,13 @@ def fetch_announcements():
     end_date   = f"{today.year}/{today.month:02d}/{today.day:02d}"
 
     url = f"https://www.tpex.org.tw/www/zh-tw/margin/announce?startDate={start_date}&endDate={end_date}&id=&response=json"
-    resp = requests.get(url)
-    data = resp.json()
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"❌ 抓取公告失敗: {e}")
+        return []
 
     messages = []
     tables = data.get("tables", [])
@@ -88,8 +100,13 @@ def fetch_market_balance(date=None):
         date = today.strftime("%Y%m%d")
 
     url = f"https://www.twse.com.tw/exchangeReport/MI_MARGN?response=json&date={date}&selectType=ALL"
-    resp = requests.get(url)
-    data = resp.json()
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"❌ 抓取統計失敗: {e}")
+        return None
 
     if data.get("stat") != "OK":
         return None
@@ -122,7 +139,6 @@ if __name__ == "__main__":
             if pushed_records.get(msg) is None:  # 沒推播過才推
                 pushed_records[msg] = now
                 send_to_telegram(msg)
-                save_pushed_records(pushed_records)
                 print(f"[{now}] 已推播公告：\n{msg}\n")
             else:
                 print(f"[{now}] ⏸ 跳過重複公告：\n{msg}\n")
@@ -135,9 +151,11 @@ if __name__ == "__main__":
         if pushed_records.get(balance_msg) is None:  # 沒推播過才推
             pushed_records[balance_msg] = now
             send_to_telegram(balance_msg)
-            save_pushed_records(pushed_records)
             print(f"[{now}] 已推播信用交易統計：\n{balance_msg}\n")
         else:
             print(f"[{now}] ⏸ 跳過重複統計：\n{balance_msg}\n")
     else:
         print(f"[{now}] ⚠️ 今日沒有信用交易統計資料，可能是假日或尚未公布。")
+
+    # ✅ 保證最後一定會寫入 pushed.json
+    save_pushed_records(pushed_records)
