@@ -30,10 +30,19 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python run_bot.py
 
-      - name: Commit pushed.json back to repo (force push)
+      - name: Commit pushed.json back to repo (force push if changed)
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add pushed.json
-          git diff --cached --quiet || git commit -m "Update pushed.json"
-          git push origin HEAD:main --force送
+          if [ -f pushed.json ]; then
+            git add pushed.json
+            # 只有檔案有變更才 commit & push
+            if ! git diff --cached --quiet; then
+              git commit -m "Update pushed.json"
+              git push origin HEAD:main --force
+            else
+              echo "⏸ pushed.json 沒有變更，跳過 push"
+            fi
+          else
+            echo "⚠️ pushed.json 不存在，跳過 commit"
+          fi
