@@ -2,6 +2,8 @@ import requests
 import datetime
 import os
 import json
+import yfinance as yf
+import sys
 from dotenv import load_dotenv
 from collections import OrderedDict
 
@@ -64,12 +66,59 @@ def send_to_telegram(message: str):
         print(f"❌ 推播失敗: {e}")
 
 # =========================
+# 抓取貴金屬行情 (新增功能)
+# =========================
+def fetch_metal_prices():
+    # 判斷星期，週末不回傳資料 (0=週一, 5=週六, 6=週日)
+    weekday = datetime.datetime.now().weekday()
+    if weekday >= 5:
+        return None
+
+    try:
+        now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+        twd_rate = yf.Ticker("TWD=X").history(period="1d")['Close'].iloc[-1]
+        
+        metals = {
+            "黃金": "GC=F",
+            "白銀": "SI=F",
+            "鉑金": "PL=F",
+            "鈀金": "PA=F",
+            "銅": "HG=F"
+        }
+
+        msg_lines = [f"全球金屬行情 ({now_str})", f"匯率: 1 USD = {twd_rate:.2f} TWD"]
+
+        for name, symbol in metals.items():
+            data = yf.Ticker(symbol).history(period="2d")
+            if len(data) >= 2:
+                current_price = data['Close'].iloc[-1]
+                prev_price = data['Close'].iloc[-2]
+                change_pct = ((current_price - prev_price) / prev_price) * 100
+                sign = "+" if change_pct > 0 else ""
+                
+                twd = current_price * twd_rate
+                
+                info = f"{name} {current_price:>8.2f} USD ({sign}{change_pct:.2f}%)"
+                if name == "黃金":
+                    info += f"\nTWD {twd:,.0f}/盎司, {twd/8.294:,.0f}/台錢"
+                elif name == "銅":
+                    info += f"\nTWD {current_price*twd_rate:.2f}/磅"
+                else:
+                    info += f"\nTWD {twd:,.0f}/盎司"
+                
+                msg_lines.append(info)
+        
+        return "\n".join(msg_lines)
+    except Exception as e:
+        print(f"❌ 抓取貴金屬失敗: {e}")
+        return None
+
+# =========================
 # 抓櫃買中心公告
 # =========================
 def fetch_announcements():
     today = datetime.date.today()
     yesterday = today - datetime.timedelta(days=1)
-
     start_date = f"{yesterday.year}/{yesterday.month:02d}/{yesterday.day:02d}"
     end_date   = f"{today.year}/{today.month:02d}/{today.day:02d}"
 
@@ -132,30 +181,47 @@ def fetch_market_balance(date=None):
 if __name__ == "__main__":
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    # --- 1. 貴金屬行情 ---
+    print("========== 貴金屬行情 ==========")
+    metal_msg = fetch_metal_prices()
+    if metal_msg:
+        # 使用日期作為 Key 的一部分，確保每天推播一次
+        pushed_key = f"METALS_{datetime.date.today()}"
+        if pushed_records.get(pushed_key) is None:
+            send_to_telegram(metal_msg)
+            pushed_records[pushed_key] = now
+            print(f"[{now}] 已推播貴金屬行情")
+        else:
+            print(f"[{now}] ⏸ 今日已推播過貴金屬行情")
+    else:
+        print(f"[{now}] ⚠️ 週末休市或資料獲取失敗，不執行推播。")
+
+    # --- 2. 櫃買中心公告 ---
     print("========== 櫃買中心公告 ==========")
     announcements = fetch_announcements()
     if announcements:
         for msg in announcements:
-            if pushed_records.get(msg) is None:  # 沒推播過才推
+            if pushed_records.get(msg) is None:
                 pushed_records[msg] = now
                 send_to_telegram(msg)
                 print(f"[{now}] 已推播公告：\n{msg}\n")
             else:
-                print(f"[{now}] ⏸ 跳過重複公告：\n{msg}\n")
+                print(f"[{now}] ⏸ 跳過重複公告")
     else:
         print(f"[{now}] ⚠️ 今日沒有新的信用交易公告。")
 
+    # --- 3. 信用交易統計 ---
     print("========== 信用交易統計 ==========")
     balance_msg = fetch_market_balance()
     if balance_msg:
-        if pushed_records.get(balance_msg) is None:  # 沒推播過才推
+        if pushed_records.get(balance_msg) is None:
             pushed_records[balance_msg] = now
             send_to_telegram(balance_msg)
-            print(f"[{now}] 已推播信用交易統計：\n{balance_msg}\n")
+            print(f"[{now}] 已推播信用交易統計")
         else:
-            print(f"[{now}] ⏸ 跳過重複統計：\n{balance_msg}\n")
+            print(f"[{now}] ⏸ 跳過重複統計")
     else:
-        print(f"[{now}] ⚠️ 今日沒有信用交易統計資料，可能是假日或尚未公布。")
+        print(f"[{now}] ⚠️ 今日沒有信用交易統計資料。")
 
     # ✅ 保證最後一定會寫入 pushed.json
     save_pushed_records(pushed_records)
