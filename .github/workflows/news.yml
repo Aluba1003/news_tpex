@@ -14,13 +14,13 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4  
+        uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.10"
-          cache: 'pip'
+          cache: 'pip' # ✅ 開啟快取
 
       - name: Install dependencies
         run: |
@@ -41,10 +41,9 @@ jobs:
             git add pushed.json
             if ! git diff --cached --quiet; then
               git commit -m "Update pushed.json [skip ci]"
-              git push origin HEAD:main --force
+              git pull --rebase origin main # ✅ 推播前先拉取，避免衝突
+              git push origin HEAD:main
             else
               echo "⏸ pushed.json 沒有變更，跳過 push"
             fi
-          else
-            echo "⚠️ pushed.json 不存在，跳過 commit"
           fi
