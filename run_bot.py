@@ -69,9 +69,9 @@ def send_to_telegram(message: str):
 # 抓取貴金屬行情 (新增功能)
 # =========================
 def fetch_metal_prices():
-    # 判斷星期，週末不回傳資料 (0=週一, 5=週六, 6=週日)
     weekday = datetime.datetime.now().weekday()
     if weekday >= 5:
+        print("⚠️ 週末休市，不抓取金屬行情")
         return None
 
     try:
@@ -87,6 +87,7 @@ def fetch_metal_prices():
         }
 
         msg_lines = [f"全球金屬行情 ({now_str})", f"匯率: 1 USD = {twd_rate:.2f} TWD"]
+        success_count = 0
 
         for name, symbol in metals.items():
             data = yf.Ticker(symbol).history(period="2d")
@@ -97,7 +98,6 @@ def fetch_metal_prices():
                 sign = "+" if change_pct > 0 else ""
                 
                 twd = current_price * twd_rate
-                
                 info = f"{name} {current_price:>8.2f} USD ({sign}{change_pct:.2f}%)"
                 if name == "黃金":
                     info += f"\nTWD {twd:,.0f}/盎司, {twd/8.294:,.0f}/台錢"
@@ -107,7 +107,12 @@ def fetch_metal_prices():
                     info += f"\nTWD {twd:,.0f}/盎司"
                 
                 msg_lines.append(info)
-        
+                success_count += 1
+
+        if success_count == 0:
+            print("⚠️ 沒有任何金屬行情資料，不推播")
+            return None
+
         return "\n".join(msg_lines)
     except Exception as e:
         print(f"❌ 抓取貴金屬失敗: {e}")
@@ -225,3 +230,4 @@ if __name__ == "__main__":
 
     # ✅ 保證最後一定會寫入 pushed.json
     save_pushed_records(pushed_records)
+
