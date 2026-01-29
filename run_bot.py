@@ -3,7 +3,6 @@ import datetime
 import os
 import json
 import yfinance as yf
-import sys
 from dotenv import load_dotenv
 from collections import OrderedDict
 
@@ -69,9 +68,9 @@ def send_to_telegram(message: str):
 # 抓取貴金屬行情 (新增功能)
 # =========================
 def fetch_metal_prices():
+    # 判斷星期，週末不回傳資料 (0=週一, 5=週六, 6=週日)
     weekday = datetime.datetime.now().weekday()
     if weekday >= 5:
-        print("⚠️ 週末休市，不抓取金屬行情")
         return None
 
     try:
@@ -87,7 +86,6 @@ def fetch_metal_prices():
         }
 
         msg_lines = [f"全球金屬行情 ({now_str})", f"匯率: 1 USD = {twd_rate:.2f} TWD"]
-        success_count = 0
 
         for name, symbol in metals.items():
             data = yf.Ticker(symbol).history(period="2d")
@@ -98,6 +96,7 @@ def fetch_metal_prices():
                 sign = "+" if change_pct > 0 else ""
                 
                 twd = current_price * twd_rate
+                
                 info = f"{name} {current_price:>8.2f} USD ({sign}{change_pct:.2f}%)"
                 if name == "黃金":
                     info += f"\nTWD {twd:,.0f}/盎司, {twd/8.294:,.0f}/台錢"
@@ -107,12 +106,7 @@ def fetch_metal_prices():
                     info += f"\nTWD {twd:,.0f}/盎司"
                 
                 msg_lines.append(info)
-                success_count += 1
-
-        if success_count == 0:
-            print("⚠️ 沒有任何金屬行情資料，不推播")
-            return None
-
+        
         return "\n".join(msg_lines)
     except Exception as e:
         print(f"❌ 抓取貴金屬失敗: {e}")
@@ -146,38 +140,76 @@ def fetch_announcements():
     return messages
 
 # =========================
-# 抓 TWSE 信用交易統計 (全市場)
+# 抓取融資增減摘要 (上市 + 上櫃)
 # =========================
-def fetch_market_balance(date=None):
-    if date is None:
-        today = datetime.date.today()
-        date = today.strftime("%Y%m%d")
+def fetch_market_margin_summary():
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/javascript, */*; q=0.01'
+    }
 
-    url = f"https://www.twse.com.tw/exchangeReport/MI_MARGN?response=json&date={date}&selectType=ALL"
-    try:
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:
-        print(f"❌ 抓取統計失敗: {e}")
-        return None
+    for i in range(7):
+        target_date = datetime.date.today() - datetime.timedelta(days=i)
+        date_str = target_date.strftime("%Y%m%d")
 
-    if data.get("stat") != "OK":
-        return None
+        twse_line = ""
+        tpex_line = ""
 
-    for table in data.get("tables", []):
-        if "信用交易統計" in table.get("title", ""):
-            msg_lines = [f"📊 {date} 全市場信用交易統計"]
-            for row in table.get("data", []):
-                item = row[0]
-                prev = int(row[-2].replace(",", ""))
-                today_val = int(row[-1].replace(",", ""))
-                diff = today_val - prev
-                pct = (diff / prev * 100) if prev != 0 else 0
-                msg_lines.append(
-                    f"{item}\n  前日餘額：{prev:,}\n  今日餘額：{today_val:,}\n  增減數：{diff:+,}\n  增減百分比：{pct:+.2f}%\n"
-                )
-            return "\n".join(msg_lines)
+        # --- 上市 (TWSE) ---
+        try:
+            url_twse = f"https://www.twse.com.tw/exchangeReport/MI_MARGN?response=json&date={date_str}&selectType=ALL"
+            res_twse = requests.get(url_twse, headers=headers, timeout=10).json()
+            if res_twse.get("stat") == "OK":
+                for table in res_twse.get("tables", []):
+                    if "信用交易統計" in table.get("title", ""):
+                        for row in table.get("data", []):
+                            if "融資" in row[0] and "金額" in row[0]:
+                                diff = (int(row[-1].replace(",", "")) - int(row[-2].replace(",", ""))) / 100000
+                                twse_line = f"加權指數融資增減：{diff:+.2f} 億元"
+        except Exception as e:
+            print(f"DEBUG: 上市抓取失敗 - {e}")
+
+        # --- 上櫃 (TPEx) ---
+        try:
+            url_tpex = f"https://www.tpex.org.tw/www/zh-tw/margin/balance?date={date_str}&response=json"
+            res_tpex = requests.get(url_tpex, headers=headers, timeout=10).json()
+            
+            # 根據你提供的 JSON 結尾，數據在 tables[0]['summary']
+            # 我們直接從 tables 裡面挖
+            tpex_tables = res_tpex.get("tables", [])
+            if tpex_tables and "summary" in tpex_tables[0]:
+                summary_data = tpex_tables[0]["summary"]
+                
+                # 遍歷 summary，尋找「融資金(仟元)」這一列
+                for row in summary_data:
+                    if "融資金" in str(row[1]):
+                        # 根據你貼的數據：
+                        # row[1] 是 "融資金(仟元)"
+                        # row[2] 是 前日餘額 "133,446,927"
+                        # row[6] 是 今日餘額 "135,866,180" (在 "74,249" 後面那個)
+                        # ⚠️ 修正索引：在你的 JSON 中，融資金列的項目名稱是在 index 1
+                        
+                        prev_val = int(row[2].replace(",", ""))
+                        today_val = int(row[6].replace(",", ""))
+                        
+                        diff = (today_val - prev_val) / 100000
+                        tpex_line = f"櫃買指數融資增減：{diff:+.2f} 億元"
+                        break
+        except Exception as e:
+            # print(f"解析出錯: {e}")
+            pass
+
+        # 檢查點
+        if twse_line and tpex_line:
+            header = f"📊 {target_date} 市場融資變動"
+            msg = f"{header}\n\n{twse_line}\n{tpex_line}"
+            print(f"✅ 成功組合資料：\n{msg}") # 這行會 print 在你的終端機
+            return msg
+        
+        # 顯示哪一個沒抓到
+        status = f"上市:{'OK' if twse_line else '失敗'}, 上櫃:{'OK' if tpex_line else '失敗'}"
+        print(f"ℹ️ {target_date} {status}，繼續往前找...")
+
     return None
 
 # =========================
@@ -216,18 +248,17 @@ if __name__ == "__main__":
         print(f"[{now}] ⚠️ 今日沒有新的信用交易公告。")
 
     # --- 3. 信用交易統計 ---
-    print("========== 信用交易統計 ==========")
-    balance_msg = fetch_market_balance()
-    if balance_msg:
-        if pushed_records.get(balance_msg) is None:
-            pushed_records[balance_msg] = now
-            send_to_telegram(balance_msg)
-            print(f"[{now}] 已推播信用交易統計")
+    print("========== 融資變動統計 ==========")
+    margin_msg = fetch_market_margin_summary()
+    if margin_msg:
+        if pushed_records.get(margin_msg) is None:
+            send_to_telegram(margin_msg)
+            pushed_records[margin_msg] = now
+            print(f"[{now}] 已推播融資統計報告")
         else:
-            print(f"[{now}] ⏸ 跳過重複統計")
+            print(f"[{now}] ⏸ 該日數據已推播過")
     else:
-        print(f"[{now}] ⚠️ 今日沒有信用交易統計資料。")
+        print(f"[{now}] ⚠️ 無法取得融資統計資料。")
 
     # ✅ 保證最後一定會寫入 pushed.json
     save_pushed_records(pushed_records)
-
