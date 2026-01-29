@@ -159,28 +159,26 @@ def fetch_market_margin_summary():
         try:
             url_twse = f"https://www.twse.com.tw/exchangeReport/MI_MARGN?response=json&date={date_str}&selectType=ALL"
             res_twse = requests.get(url_twse, headers=headers, timeout=10).json()
-            if res_twse.get("stat") == "OK":
-                # 上市數據通常在第一個 table (信用交易統計)
-                data = res_twse["tables"][0]["data"]
+            
+            if res_twse.get("stat") == "OK" and "tables" in res_twse:
+                # 根據你提供的 JSON，數據在 tables[0]["data"]
+                twse_data = res_twse["tables"][0]["data"]
                 
-                # data[0] 是融資, data[1] 是融券
-                # 欄位：[項目, 買進, 賣出, 現償, 前日餘額, 今日餘額]
-                
-                # 融資 (取金額，單位：千元)
-                margin_row = data[0]
-                m_prev = int(margin_row[4].replace(",", ""))
-                m_today = int(margin_row[5].replace(",", ""))
-                m_diff = (m_today - m_prev) / 100000
-                
-                # 融券 (取張數)
-                short_row = data[1]
-                s_prev = int(short_row[4].replace(",", ""))
+                # 1. 融券數據在 data[1] (融券交易單位)
+                short_row = twse_data[1]
                 s_today = int(short_row[5].replace(",", ""))
+                s_prev = int(short_row[4].replace(",", ""))
                 s_diff = s_today - s_prev
                 
-                twse_res = f"加權指數融資增減：{m_diff:+.2f} 億元\n加權指數融券增減：{s_diff:+} 張"
+                # 2. 融資金額在 data[2] (融資金額仟元)
+                margin_row = twse_data[2]
+                m_today = int(margin_row[5].replace(",", ""))
+                m_prev = int(margin_row[4].replace(",", ""))
+                m_diff_billion = (m_today - m_prev) / 100000 
+                
+                twse_res = f"加權指數融資增減：{m_diff_billion:+.2f} 億元\n加權指數融券增減：{s_diff:+} 張"
         except Exception as e:
-            print(f"DEBUG: 上市解析失敗 - {e}")
+            print(f"DEBUG: 上市解析失敗 ({date_str}) - {e}")
 
         # --- 上櫃 (TPEx) ---
         try:
