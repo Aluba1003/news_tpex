@@ -1,16 +1,15 @@
-import requests
-import datetime
 import os
+import time
+import datetime
 import json
+import requests
 import yfinance as yf
-from dotenv import load_dotenv
 from collections import OrderedDict
 
-# 載入 .env
-load_dotenv()
-
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+# =========================
+# 設定與環境變數
+# =========================
+CF_WORKER_URL = os.getenv("CF_WORKER_URL")
 
 PUSHED_FILE = "pushed.json"
 MAX_RECORDS = 1000  # 最多保留 1000 筆紀錄
@@ -47,25 +46,29 @@ def save_pushed_records(records):
 pushed_records = load_pushed_records()
 
 # =========================
-# Telegram 推播
+# Telegram 推播 (透過 Cloudflare Worker)
 # =========================
-def send_to_telegram(message: str):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("❌ 缺少 TELEGRAM_TOKEN 或 CHAT_ID")
+def send_to_telegram(message: str, delay: int = 1):
+    if not CF_WORKER_URL:
+        print("❌ 缺少 CF_WORKER_URL 環境變數")
         return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "disable_web_page_preview": True}
+    
     try:
-        resp = requests.post(url, json=payload, timeout=10)
+        resp = requests.post(CF_WORKER_URL, json={
+            "message": message
+        }, timeout=10)
+        
         if resp.status_code == 200:
             print("✅ 推播成功")
         else:
             print("❌ 推播失敗:", resp.text)
     except requests.RequestException as e:
         print(f"❌ 推播失敗: {e}")
+        
+    time.sleep(delay)
 
 # =========================
-# 抓取貴金屬行情 (新增功能)
+# 抓取貴金屬行情
 # =========================
 def fetch_metal_prices():
     # 判斷星期，週末不回傳資料 (0=週一, 5=週六, 6=週日)
@@ -161,16 +164,13 @@ def fetch_market_margin_summary():
             res_twse = requests.get(url_twse, headers=headers, timeout=10).json()
             
             if res_twse.get("stat") == "OK" and "tables" in res_twse:
-                # 根據你提供的 JSON，數據在 tables[0]["data"]
                 twse_data = res_twse["tables"][0]["data"]
                 
-                # 1. 融券數據在 data[1] (融券交易單位)
                 short_row = twse_data[1]
                 s_today = int(short_row[5].replace(",", ""))
                 s_prev = int(short_row[4].replace(",", ""))
                 s_diff = s_today - s_prev
                 
-                # 2. 融資金額在 data[2] (融資金額仟元)
                 margin_row = twse_data[2]
                 m_today = int(margin_row[5].replace(",", ""))
                 m_prev = int(margin_row[4].replace(",", ""))
@@ -193,13 +193,10 @@ def fetch_market_margin_summary():
                 tpex_short = ""
                 
                 for row in summary_data:
-                    # 1. 處理融券 (通常在 summary[0], 合計張數那一列)
                     if "合計(張)" in str(row[1]):
                         prev_s = int(row[10].replace(",", ""))
                         today_s = int(row[14].replace(",", ""))
                         tpex_short = f"櫃買指數融券增減：{today_s - prev_s:+} 張"
-                        
-                    # 2. 處理融資金額 (通常在 summary[1], 融資金那一列)
                     elif "融資金" in str(row[1]):
                         prev_m = int(row[2].replace(",", ""))
                         today_m = int(row[6].replace(",", ""))
@@ -211,7 +208,6 @@ def fetch_market_margin_summary():
         except Exception as e:
             print(f"DEBUG: 上櫃抓取失敗 - {e}")
 
-        # 只要兩邊都有抓到基礎資料就組合回傳
         if twse_res and tpex_res:
             return f"📊 {target_date} 市場融資券變動\n\n{twse_res}\n{tpex_res}"
         
@@ -229,7 +225,6 @@ if __name__ == "__main__":
     print("========== 貴金屬行情 ==========")
     metal_msg = fetch_metal_prices()
     if metal_msg:
-        # 使用日期作為 Key 的一部分，確保每天推播一次
         pushed_key = f"METALS_{datetime.date.today()}"
         if pushed_records.get(pushed_key) is None:
             send_to_telegram(metal_msg)
@@ -267,5 +262,5 @@ if __name__ == "__main__":
     else:
         print(f"[{now}] ⚠️ 無法取得融資統計資料。")
 
-    # ✅ 保證最後一定會寫入 pushed.json
+    # 儲存已推播紀錄
     save_pushed_records(pushed_records)
